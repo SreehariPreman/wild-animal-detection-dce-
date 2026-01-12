@@ -135,7 +135,7 @@ if img_file:
 
     # Set confidence thresholds for specialized models
     TIGER_CONFIDENCE_THRESHOLD = 0.8
-    LION_CONFIDENCE_THRESHOLD = 0.3
+    LION_CONFIDENCE_THRESHOLD = 0.8
 
     # Run default model first
     default_results = default_model(img)
@@ -149,11 +149,11 @@ if img_file:
     for det in default_preds:
         x1, y1, x2, y2, conf, cls = det.tolist()
         cls = int(cls)
-        
+        if conf < 0.8:
+            continue  # Only show detections with confidence > 0.8
         # Check if tiger or lion detected by general model
         if cls == 21:  # bear class in COCO, but check if it's detecting as big cat
             tiger_detected_general = True
-        
         if cls in wild_animals:  # Wild animals
             other_animals_detected = True
             animal_name = wild_animals[cls]
@@ -165,10 +165,9 @@ if img_file:
             print("detected default model",label)
             cv2.putText(img_annotated, label, (x1, y1-10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255,0,0), 2)
-    
-    if other_animals_detected:
+    if other_animals_detected and detected_animals:
         animals_str = ", ".join(detected_animals)
-        st.info(f"🦒 {animals_str.capitalize()} detected using YOLOv9-c General Model")
+        st.info(f"🦒 {animals_str.capitalize()} detected using YOLOv9-c General Model (confidence > 0.8)")
     
     # Now run specialized tiger model for verification/better detection
     tiger_results = tiger_model(img)
@@ -213,9 +212,8 @@ if img_file:
         print("detected default model",label)
         cv2.putText(img_annotated, label, (x1, y1-10),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,215,255), 2)
-        
     if lion_detected:
-        st.success("🦁 Lion detected using specialized Lion Detection Model")
+        st.success("🦁 Lion detected using specialized Lion Detection Model (confidence > 0.8)")
     
     # Show warning if no animals detected at all
     if not other_animals_detected and not tiger_detected and not lion_detected:
