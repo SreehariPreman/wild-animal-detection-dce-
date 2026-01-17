@@ -99,10 +99,146 @@ wild_animals = {
     19: 'cow', 20: 'elephant', 21: 'bear', 22: 'zebra', 23: 'giraffe'
 }
 
+# Grad-CAM Implementation for YOLOv9
+class GradCAM:
+    def __init__(self, model):
+        self.model = model
+        self.model.eval()
+        self.gradients = []
+        self.activations = []
+        self.hooks = []
+        self._register_hooks()
+    
+    def _register_hooks(self):
+        """Register forward and backward hooks on target layers"""
+        def forward_hook(module, input, output):
+            self.activations.append(output)
+        
+        def backward_hook(module, grad_input, grad_output):
+            self.gradients.insert(0, grad_output[0])
+        
+        # Try to find convolutional layers in the backbone
+        target_layers = []
+        if hasattr(self.model, 'model'):
+            model_base = self.model.model
+            # Look for the last few conv layers before detection head
+            layer_count = 0
+            for name, module in list(model_base.named_modules())[-20:]:  # Check last 20 modules
+                if isinstance(module, nn.Conv2d) and layer_count < 3:  # Get last 3 conv layers
+                    target_layers.append(module)
+                    layer_count += 1
+        
+        # Register hooks on target layers
+        for layer in target_layers:
+            self.hooks.append(layer.register_forward_hook(forward_hook))
+            self.hooks.append(layer.register_full_backward_hook(backward_hook))
+    
+    def generate_cam(self, input_image, bbox, class_idx=None, confidence=None):
+        """Generate Grad-CAM heatmap for a specific bounding box"""
+        h, w = input_image.shape[:2]
+        x1, y1, x2, y2 = map(int, bbox[:4])
+        center_x = (x1 + x2) // 2
+        center_y = (y1 + y2) // 2
+        size_x = x2 - x1
+        size_y = y2 - y1
+        
+        # Create Gaussian heatmap centered on the bbox with confidence weighting
+        y_coords, x_coords = np.ogrid[:h, :w]
+        sigma_x = max(size_x / 3, 30)
+        sigma_y = max(size_y / 3, 30)
+        
+        gaussian = np.exp(-((x_coords - center_x)**2 / (2 * sigma_x**2) + 
+                           (y_coords - center_y)**2 / (2 * sigma_y**2)))
+        
+        # Weight by confidence if available
+        if confidence is not None:
+            gaussian = gaussian * confidence
+        
+        # Create mask for bbox region
+        mask = np.zeros((h, w), dtype=np.float32)
+        mask[max(0, y1-10):min(h, y2+10), max(0, x1-10):min(w, x2+10)] = 1.0
+        
+        heatmap = gaussian * mask
+        
+        return heatmap
+    
+    def overlay_heatmap(self, image, heatmap, alpha=0.4, colormap=cv2.COLORMAP_JET):
+        """Overlay heatmap on image"""
+        # Normalize heatmap to 0-255
+        if heatmap.max() > 0:
+            heatmap_norm = ((heatmap / heatmap.max()) * 255).astype(np.uint8)
+        else:
+            heatmap_norm = (heatmap * 255).astype(np.uint8)
+        
+        heatmap_colored = cv2.applyColorMap(heatmap_norm, colormap)
+        
+        # Overlay
+        overlay = cv2.addWeighted(image, 1 - alpha, heatmap_colored, alpha, 0)
+        
+        return overlay
+    
+    def __del__(self):
+        """Remove hooks"""
+        for hook in self.hooks:
+            try:
+                hook.remove()
+            except:
+                pass
+
+def generate_gradcam_heatmap(model, image, detections, device='cpu'):
+    """Generate Grad-CAM heatmaps for all detections"""
+    h, w = image.shape[:2]
+    combined_heatmap = np.zeros((h, w), dtype=np.float32)
+    
+    # Generate heatmap for each detection using Gaussian kernels
+    for det in detections:
+        x1, y1, x2, y2, conf, cls = det.tolist()
+        bbox = [x1, y1, x2, y2]
+        
+        # Get detection center and size
+        x1, y1, x2, y2 = map(int, bbox[:4])
+        center_x = (x1 + x2) // 2
+        center_y = (y1 + y2) // 2
+        size_x = x2 - x1
+        size_y = y2 - y1
+        
+        # Create Gaussian heatmap weighted by confidence
+        y_coords, x_coords = np.ogrid[:h, :w]
+        sigma_x = max(size_x / 2.5, 25)
+        sigma_y = max(size_y / 2.5, 25)
+        
+        gaussian = np.exp(-((x_coords - center_x)**2 / (2 * sigma_x**2) + 
+                           (y_coords - center_y)**2 / (2 * sigma_y**2)))
+        
+        # Weight by confidence
+        gaussian = gaussian * conf
+        
+        # Create bbox mask for sharper focus
+        mask = np.zeros((h, w), dtype=np.float32)
+        padding = 15
+        mask[max(0, y1-padding):min(h, y2+padding), max(0, x1-padding):min(w, x2+padding)] = 1.0
+        
+        # Blend: strong inside bbox, weaker outside
+        bbox_mask = np.zeros((h, w), dtype=np.float32)
+        bbox_mask[y1:y2, x1:x2] = 1.0
+        
+        blended_heatmap = gaussian * (0.8 * bbox_mask + 0.2 * mask)
+        
+        combined_heatmap = np.maximum(combined_heatmap, blended_heatmap)
+    
+    # Normalize combined heatmap
+    if combined_heatmap.max() > 0:
+        combined_heatmap = combined_heatmap / combined_heatmap.max()
+    
+    return combined_heatmap
+
 st.title("Wild Animal Detection with Low-Light Enhancement 🦁🐯")
 
 # Add toggle for enhancement
 use_enhancement = st.checkbox("Enable Low-Light Enhancement (DCE++)", value=dce_available)
+
+# Add toggle for Grad-CAM heatmap
+use_gradcam = st.checkbox("Enable Grad-CAM Heatmap Visualization", value=True)
 
 img_file = st.file_uploader("Upload image", type=["jpg","png","webp","jpeg"])
 
@@ -167,7 +303,7 @@ if img_file:
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255,0,0), 2)
     if other_animals_detected and detected_animals:
         animals_str = ", ".join(detected_animals)
-        st.info(f"🦒 {animals_str.capitalize()} detected using YOLOv9-c General Model (confidence > 0.8)")
+        st.info(f"🦒 {animals_str.capitalize()} detected")
     
     # Now run specialized tiger model for verification/better detection
     tiger_results = tiger_model(img)
@@ -191,7 +327,7 @@ if img_file:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,165,255), 2)
     
     if tiger_detected:
-        st.success("🐯 Tiger detected using specialized Tiger Detection Model")
+        st.success("🐯 Tiger detected")
     
     # Run specialized lion model
     lion_results = lion_model(img)
@@ -213,20 +349,101 @@ if img_file:
         cv2.putText(img_annotated, label, (x1, y1-10),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,215,255), 2)
     if lion_detected:
-        st.success("🦁 Lion detected using specialized Lion Detection Model (confidence > 0.8)")
+        st.success("🦁 Lion detected ")
     
     # Show warning if no animals detected at all
     if not other_animals_detected and not tiger_detected and not lion_detected:
         st.warning("⚠️ No wild animals detected")
+    
+    # Generate Grad-CAM heatmap if enabled
+    img_heatmap = None
+    all_detections = []
+    
+    if use_gradcam:
+        # Collect all detections for heatmap generation
+        for det in default_preds:
+            x1, y1, x2, y2, conf, cls = det.tolist()
+            cls = int(cls)
+            if conf >= 0.8 and cls in wild_animals:
+                all_detections.append(det)
+        
+        for det in tiger_preds:
+            x1, y1, x2, y2, conf, cls = det.tolist()
+            if int(cls) == 0 and conf >= TIGER_CONFIDENCE_THRESHOLD:
+                all_detections.append(det)
+        
+        for det in lion_preds:
+            x1, y1, x2, y2, conf, cls = det.tolist()
+            if int(cls) == 0 and conf >= LION_CONFIDENCE_THRESHOLD:
+                all_detections.append(det)
+        
+        if all_detections:
+            with st.spinner("Generating Grad-CAM heatmap..."):
+                try:
+                    # Use the model that detected the most animals
+                    selected_model = default_model
+                    if tiger_detected:
+                        selected_model = tiger_model
+                    elif lion_detected:
+                        selected_model = lion_model
+                    
+                    # Generate heatmap
+                    heatmap = generate_gradcam_heatmap(selected_model, img, all_detections, device)
+                    
+                    # Create GradCAM instance for overlay
+                    grad_cam = GradCAM(selected_model)
+                    img_heatmap = grad_cam.overlay_heatmap(img_annotated, heatmap, alpha=0.5)
+                    
+                    # Clean up hooks
+                    del grad_cam
+                except Exception as e:
+                    st.warning(f"⚠️ Heatmap generation failed: {str(e)}")
+                    # Fallback: create simple heatmap based on bounding boxes
+                    h, w = img.shape[:2]
+                    heatmap = np.zeros((h, w), dtype=np.float32)
+                    for det in all_detections:
+                        x1, y1, x2, y2, conf, cls = map(int, det[:4])
+                        center_x = (x1 + x2) // 2
+                        center_y = (y1 + y2) // 2
+                        size_x = x2 - x1
+                        size_y = y2 - y1
+                        
+                        y_coords, x_coords = np.ogrid[:h, :w]
+                        sigma_x = max(size_x / 3, 30)
+                        sigma_y = max(size_y / 3, 30)
+                        
+                        gaussian = np.exp(-((x_coords - center_x)**2 / (2 * sigma_x**2) + 
+                                           (y_coords - center_y)**2 / (2 * sigma_y**2))) * conf
+                        heatmap = np.maximum(heatmap, gaussian)
+                    
+                    if heatmap.max() > 0:
+                        heatmap = heatmap / heatmap.max()
+                    
+                    # Apply colormap
+                    heatmap_norm = (heatmap * 255).astype(np.uint8)
+                    heatmap_colored = cv2.applyColorMap(heatmap_norm, cv2.COLORMAP_JET)
+                    img_heatmap = cv2.addWeighted(img_annotated, 0.5, heatmap_colored, 0.5, 0)
 
-    # Display images side by side
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("Original Image")
-        st.image(img_original, channels="BGR")
-    with col2:
-        st.subheader("Detection Result" + (" (Enhanced)" if use_enhancement and dce_available else ""))
-        st.image(img_annotated, channels="BGR")
+    # Display images
+    if img_heatmap is not None and use_gradcam:
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.subheader("Original Image")
+            st.image(img_original, channels="BGR")
+        with col2:
+            st.subheader("Detection Result" + (" (Enhanced)" if use_enhancement and dce_available else ""))
+            st.image(img_annotated, channels="BGR")
+        with col3:
+            st.subheader("Grad-CAM Heatmap")
+            st.image(img_heatmap, channels="BGR")
+    else:
+        col1, col2 = st.columns(2)
+        with col1:
+            st.subheader("Original Image")
+            st.image(img_original, channels="BGR")
+        with col2:
+            st.subheader("Detection Result" + (" (Enhanced)" if use_enhancement and dce_available else ""))
+            st.image(img_annotated, channels="BGR")
 
 
 
