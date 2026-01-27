@@ -2,3 +2,4 @@ streamlit
 torch
 opencv-python
 numpy
+pandas

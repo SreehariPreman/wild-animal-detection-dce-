@@ -8,6 +8,7 @@ from src.detection.model_loader import ModelLoader
 from src.detection.detector import DetectionManager
 from src.utils.gradcam import GradCAM, generate_gradcam_heatmap
 from src.utils.image_processing import enhance_image, load_image_from_upload
+from src.utils.detection_logger import DetectionLogger
 from src.config.constants import SUPPORTED_IMAGE_FORMATS, GRADCAM_ALPHA
 
 
@@ -42,21 +43,40 @@ def main():
     """Main application function"""
     st.title("Wild Animal Detection with Low-Light Enhancement")
     
+    # Initialize logger
+    logger = DetectionLogger()
+    
     # Load models
     models = load_models()
     
-    # Sidebar configuration
+    # Sidebar navigation and configuration
     with st.sidebar:
-        st.header("⚙️ Settings")
-        use_enhancement = st.checkbox(
-            "Enable Low-Light Enhancement (DCE++)", 
-            value=models['dce_available']
+        st.header("📍 Navigation")
+        page = st.radio(
+            "Select Page",
+            ["🔍 Detection", "📊 Detection History"],
+            label_visibility="collapsed"
         )
-        use_gradcam = st.checkbox(
-            "Enable Grad-CAM Heatmap Visualization", 
-            value=True
-        )
+        
+        st.divider()
+        
+        if page == "🔍 Detection":
+            st.header("⚙️ Settings")
+            use_enhancement = st.checkbox(
+                "Enable Low-Light Enhancement (DCE++)", 
+                value=models['dce_available']
+            )
+            use_gradcam = st.checkbox(
+                "Enable Grad-CAM Heatmap Visualization", 
+                value=True
+            )
     
+    # Display selected page
+    if page == "📊 Detection History":
+        display_detection_history(logger)
+        return
+    
+    # Detection page
     # File uploader
     img_file = st.file_uploader(
         "Upload image", 
@@ -76,11 +96,13 @@ def main():
     
     # Apply enhancement if enabled
     img = img_original.copy()
+    enhancement_applied = False
     if use_enhancement and models['dce_available'] and models['dce_model'] is not None:
         with st.spinner("Enhancing image..."):
             img, enhanced = enhance_image(img_original, models['dce_model'], models['device'])
             if enhanced:
                 st.success("✨ Image enhanced successfully!")
+                enhancement_applied = True
             else:
                 st.warning("⚠️ Enhancement failed, using original image")
     
@@ -97,6 +119,14 @@ def main():
     
     # Get detection summary
     summary = detection_manager.get_detection_summary(detections)
+    
+    # Log the detection
+    logger.log_detection(
+        filename=img_file.name,
+        detections=detections,
+        enhancement_used=enhancement_applied,
+        summary=summary
+    )
     
     # Display detection results
     display_detection_results(summary)
@@ -220,6 +250,53 @@ def display_images(img_original, img_annotated, img_heatmap,
         with col2:
             st.subheader(f"Detection Result")
             st.image(img_annotated, channels="BGR", use_container_width=True)
+
+
+def display_detection_history(logger: DetectionLogger):
+    """Display detection history table"""
+    st.header("📊 Detection History")
+    
+    # Clear button
+    if st.button("🗑️ Clear All Logs", type="secondary"):
+        logger.clear_logs()
+        st.success("All logs cleared!")
+        st.rerun()
+    
+    # Get and display all logs
+    df = logger.get_logs()
+    
+    if df.empty:
+        st.info("No detection logs yet. Upload an image in the Detection page to get started!")
+    else:
+        # Reverse order to show most recent first
+        df = df.iloc[::-1].reset_index(drop=True)
+        
+        # Format the dataframe for better display
+        display_df = df.copy()
+        display_df.columns = [
+            'Timestamp', 'Filename', 'Enhancement', 'Status', 
+            'Count', 'Tiger', 'Lion', 'Other Animals', 
+            'All Detections', 'Max Confidence'
+        ]
+        
+        # Display table
+        st.dataframe(
+            display_df,
+            use_container_width=True,
+            hide_index=True,
+            height=600
+        )
+        
+        st.caption(f"Total: {len(display_df)} detection(s)")
+        
+        # Download option
+        csv = df.to_csv(index=False)
+        st.download_button(
+            label="📥 Download Full Log as CSV",
+            data=csv,
+            file_name="detection_history.csv",
+            mime="text/csv"
+        )
 
 
 if __name__ == "__main__":

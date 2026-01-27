@@ -7,8 +7,8 @@ A comprehensive deep learning application for detecting wild animals in images w
 - 🦁 **Specialized Animal Detection**: Custom models for tiger, lion, and general wild animal detection
 - 🌙 **Low-Light Enhancement**: Zero-DCE++ (Zero-Reference Deep Curve Estimation) for improving visibility in dark images
 - 🔥 **Grad-CAM Heatmaps**: Visual explanations showing which image regions the model focuses on
-- 📊 **Modular Architecture**: Clean, scalable codebase with separated concerns
-- 🎨 **Interactive UI**: User-friendly Streamlit interface with real-time processing
+- 📊 **Detection History Logging**: Track all detections with persistent CSV logging across sessions
+
 
 ## Project Structure
 
@@ -24,7 +24,8 @@ wild-animal-detection-dce-/
 │   │   └── model_loader.py # Model loading utilities
 │   ├── utils/             # Utility functions
 │   │   ├── gradcam.py     # Grad-CAM implementation
-│   │   └── image_processing.py # Image enhancement utilities
+│   │   ├── image_processing.py # Image enhancement utilities
+│   │   └── detection_logger.py # Detection history logging
 │   └── config/            # Configuration
 │       └── constants.py   # Configuration constants
 ├── yolov9/                # YOLOv9 repository (submodule/cloned)
@@ -133,6 +134,8 @@ The application will start on `http://localhost:8501` by default.
 
 ### Using the Interface
 
+#### Detection Tab
+
 1. **Upload Image**: Click "Upload image" and select an image file (JPG, PNG, WEBP, JPEG)
 
 2. **Enable Low-Light Enhancement** (Optional):
@@ -147,6 +150,21 @@ The application will start on `http://localhost:8501` by default.
    - **Original Image**: The uploaded image
    - **Detection Result**: Image with bounding boxes and labels
    - **Grad-CAM Heatmap** (if enabled): Heatmap overlay showing attention regions
+
+### Detection Logging
+
+Every detection run is automatically logged with the following information:
+- **Timestamp**: When the detection was performed
+- **Filename**: Name of the uploaded image
+- **Enhancement Used**: Whether DCE++ enhancement was applied
+- **Detection Status**: Success or No Detection
+- **Number of Detections**: Count of detected animals
+- **Tiger/Lion Detected**: Boolean flags for specialized detections
+- **Other Animals**: List of other wild animals detected
+- **All Detections**: Complete list with confidence scores
+- **Max Confidence**: Highest confidence score in the detection
+
+Logs are stored in `detection_logs.csv` in the project root directory and persist across application sessions.
 
 ### Supported Animal Classes
 
@@ -173,6 +191,7 @@ Additionally, specialized models for:
 - `torch` - PyTorch deep learning framework
 - `opencv-python` - Computer vision library
 - `numpy` - Numerical computing
+- `pandas` - Data manipulation and CSV handling
 - `torchvision` - PyTorch vision utilities
 
 ### External Repositories Used
